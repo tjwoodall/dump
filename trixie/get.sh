@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# This script is for TJW - not useful to anyone else.
+
+#dget from devscripts
+
+fn=$( ssh apt-mirror@aptmirror19 echo '/mnt/mirror/ftp/mirror/local/pool/main/e/e2fsprogs/*tjw13*.dsc' | cut -d/ -f6- )
+
+dget http://aptmirror.home.woodall.me.uk/$fn
+
