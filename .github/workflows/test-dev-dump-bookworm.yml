@@ -1,0 +1,144 @@
+name: Run bookworm dev dump/restore noroot tests
+on:
+  workflow_dispatch:
+
+# every step starts in ${GITHUB_WORKSPACE}
+# remember to update both run-id if artifacts are regenerated
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:oldstable
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No install recommends
+        run: |
+          cat >/etc/apt/apt.conf.d/99-no-recommends << 'EOF'
+          APT
+          {
+            Install-Recommends "false";
+          }
+          EOF
+
+      - name: get run-id of fuse2fs artifacts
+        id: get_fuse2fs_runid
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const workflow = "build-fuse2fs-bookworm.yml"
+            const branch = "main";
+
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: workflow,
+              branch,
+              status: "success"
+            });
+
+            if (runs.data.workflow_runs.length === 0) {
+              core.setFailed("No successful runs found");
+            }
+
+            const run_id = runs.data.workflow_runs[0].id;
+            core.setOutput("run_id", run_id);
+
+      - name: get run-id of build artifacts
+        id: get_dump_runid
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const workflow = "build-dev-dump-bookworm.yml"
+            const branch = "main";
+
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: workflow,
+              branch,
+              status: "success"
+            });
+
+            if (runs.data.workflow_runs.length === 0) {
+              core.setFailed("No successful runs found");
+            }
+
+            const run_id = runs.data.workflow_runs[0].id;
+            core.setOutput("run_id", run_id);
+
+      - name: Fetch updated fuse2fs for LSEEK_HOLE/LSEEK_DATA
+        uses: actions/download-artifact@v5
+        with:
+          name: fuse2fs-bookworm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+#          repository: tjwoodall/dump
+          path: artifacts/
+          run-id: ${{ steps.get_fuse2fs_runid.outputs.run_id }}
+
+      - name: Install updated fuse2fs
+        run: |
+          apt-get update
+          apt-get install -y ./artifacts/fuse2fs_*.deb ./artifacts/libext2fs2_*.deb ./artifacts/e2fsprogs_*.deb
+          apt-get install -y git ca-certificates fuse3 attr socat coreutils acl expect
+          apt-get install -y libblkid1 libbz2-1.0 libc6 libcom-err2 libext2fs2 liblzo2-2 libreadline8 libselinux1 zlib1g tar
+          # attr - fsetattr
+          # socat - create socket
+          # coreutils - stdbuf
+          # acl - setfacl
+
+      - name: Clone SourceForge repo
+        run: |
+          git clone https://git.code.sf.net/p/dump/code --branch v0.4b55-wip dump-code
+#          git clone https://git.code.sf.net/u/locofungus/dump --branch v0.4b55-wip dump-code
+
+      - name: Fetch test binaries
+        uses: actions/download-artifact@v5
+        with:
+          name: dump-dev-bookworm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: test-runner/
+          run-id: ${{ steps.get_dump_runid.outputs.run_id }}
+
+      - name: Create test runner
+        run: |
+          chmod 755 test-runner/faketape/dump-info
+          chmod 755 test-runner/faketape/faketape-st
+          chmod 755 test-runner/faketape/faketape
+          chmod 755 test-runner/faketape/mangle-tape
+          chmod 755 test-runner/dump/dump
+          chmod 755 test-runner/restore/restore
+          chmod 755 test-runner/rmt/rmt
+          mkdir -p test-runner/testing/scripts/historical
+          cp -dpR dump-code/testing/noroot test-runner/testing/
+          cp -dpR test-images test-runner/testing/scripts/historical/
+
+      - name: Run the tests
+        run: |
+          cd test-runner/testing/noroot/
+          sed -i '/make -C/ d' run_all_tests.sh
+          rm -f /etc/fstab
+          #./run_all_tests.sh --run-only interactive-tab-completion --run-only filesys-name --run-only bitfields-mangled
+          ./run_all_tests.sh
+          echo "exit_code=$?" >>$GITHUB_OUTPUT
+
+      - name: Collect logs
+        if: always()
+        run: |
+          cd test-runner/testing/noroot/
+          mkdir "${GITHUB_WORKSPACE}/logs"
+          cp *.log "${GITHUB_WORKSPACE}/logs"
+
+      - name: Publish logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-dev-bookworm-logs
+          path: logs/
+
+      - name: Fail if tests failed
+        if: steps.tests.outputs.exit_code != '0'
+        run: exit 1

@@ -1,0 +1,47 @@
+name: Build fuse2fs for bookworm with working SEEK_HOLE/SEEK_DATA
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:oldstable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No install recommends
+        run: |
+          cat >/etc/apt/apt.conf.d/99-no-recommends << 'EOF'
+          APT
+          {
+            Install-Recommends "false";
+          }
+          EOF
+
+      - name: Install build tools and dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential
+          cd "${GITHUB_WORKSPACE}"
+          apt-get build-dep -y ./bookworm/*.dsc
+
+      - name: Build e2fsprogs
+        run: |
+          cd "${GITHUB_WORKSPACE}/bookworm"
+          dpkg-source -x --no-check *.dsc package
+          cd package
+          dpkg-buildpackage -d -b --no-sign
+
+      - name: Create artifacts
+        run: |
+          cd "${GITHUB_WORKSPACE}/bookworm"
+          mkdir artifacts
+          cp ./*.deb artifacts/
+
+      - name: Publish artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuse2fs-bookworm
+          path: bookworm/artifacts/
