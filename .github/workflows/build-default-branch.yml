@@ -1,0 +1,62 @@
+name: Build default dump branch
+on:
+  workflow_dispatch:
+
+# Currently needs catch2 as packaged in oldstable. To be fixed
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:oldstable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup deb-src
+        run: |
+          cat >/etc/apt/sources.list.d/bookworm-main-src.sources << 'EOF'
+          Types: deb-src
+          URIs: http://deb.debian.org/debian
+          Suites: bookworm
+          Components: main
+          EOF
+          cat >/etc/apt/apt.conf.d/99-no-recommends << 'EOF'
+          APT
+          {
+            Install-Recommends "false";
+          }
+          EOF
+
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y build-essential git
+          apt-get build-dep -y dump
+          apt-get install -y catch2
+
+      - name: Install e2fsprogs dependencies
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          apt-get build-dep -y ./bookworm/*.dsc
+
+      - name: Build e2fsprogs
+        run: |
+          cd "${GITHUB_WORKSPACE}/bookworm"
+          dpkg-source -x --no-check *.dsc package
+          cd package
+          dpkg-buildpackage -d -b --no-sign
+
+      - name: Install updated fuse2fs
+        run: |
+          cd "${GITHUB_WORKSPACE}/bookworm"
+          apt-get install -y ./fuse2fs_*.deb ./libext2fs2_*.deb
+
+      - name: Clone SourceForge repo
+        run: |
+          cd "${GITHUB_WORKSPACE}"
+          git clone https://git.code.sf.net/p/dump/code dump-code
+          cd dump-code
+          ./autogen.sh
+          ./configure
+          make
+          make check

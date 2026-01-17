@@ -1,0 +1,68 @@
+name: Build bookworm dev dump/restore for tests
+on:
+  workflow_dispatch:
+
+# every step starts in ${GITHUB_WORKSPACE}
+
+# Currently needs catch2 as packaged in oldstable. To be fixed
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:oldstable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No install recommends
+        run: |
+          cat >/etc/apt/apt.conf.d/99-no-recommends << 'EOF'
+          APT
+          {
+            Install-Recommends "false";
+          }
+          EOF
+
+      - name: setup deb-src
+        run: |
+          cat >/etc/apt/sources.list.d/bookworm-main-src.sources << 'EOF'
+          Types: deb-src
+          URIs: http://deb.debian.org/debian
+          Suites: bookworm
+          Components: main
+          EOF
+
+      - name: Install build tools and dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential git ca-certificates
+          apt-get build-dep -y dump
+          apt-get install -y catch2
+
+      - name: Clone SourceForge repo and build
+        run: |
+          git clone https://git.code.sf.net/p/dump/code --branch v0.4b53-wip dump-code
+          cd dump-code
+          ./autogen.sh
+          ./configure
+          make
+          make check
+
+      - name: Create artifacts
+        run: |
+          mkdir -p artifacts/faketape
+          cp dump-code/faketape/dump-info   artifacts/faketape/
+          cp dump-code/faketape/faketape-st artifacts/faketape/
+          cp dump-code/faketape/faketape    artifacts/faketape/
+          mkdir -p artifacts/dump
+          cp dump-code/dump/dump            artifacts/dump/
+          mkdir -p artifacts/restore
+          cp dump-code/restore/restore      artifacts/restore/
+          mkdir -p artifacts/rmt
+          cp dump-code/rmt/rmt              artifacts/rmt/
+
+      - name: Publish artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dump-dev-bookworm
+          path: artifacts/

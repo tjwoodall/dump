@@ -1,0 +1,93 @@
+name: Run bookworm dev dump/restore noroot tests
+on:
+  workflow_dispatch:
+
+# every step starts in ${GITHUB_WORKSPACE}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:oldstable
+      options: --privileged
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No install recommends
+        run: |
+          cat >/etc/apt/apt.conf.d/99-no-recommends << 'EOF'
+          APT
+          {
+            Install-Recommends "false";
+          }
+          EOF
+
+      - name: setup deb-src
+        run: |
+          cat >/etc/apt/sources.list.d/bookworm-backports-main.sources << 'EOF'
+          Types: deb
+          URIs: http://deb.debian.org/debian
+          Suites: bookworm-backports
+          Components: main
+          EOF
+
+      - name: Fetch updated fuse2fs for LSEEK_HOLE/LSEEK_DATA
+        uses: actions/download-artifact@v5
+        with:
+          name: fuse2fs-bookworm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+#          repository: tjwoodall/dump
+          path: artifacts/
+          run-id: 21101688667
+
+      - name: Install updated fuse2fs
+        run: |
+          set -x
+          apt-get update
+          apt-get install -y ./artifacts/fuse2fs_*.deb ./artifacts/libext2fs2_*.deb ./artifacts/e2fsprogs_*.deb
+          apt-get install -y git ca-certificates fuse3 attr socat coreutils acl
+          apt-get install -y libblkid1 libbz2-1.0 libc6 libcom-err2 libext2fs2 liblzo2-2 libreadline8 libselinux1 zlib1g tar
+          # attr - fsetattr
+          # socat - create socket
+          # coreutils - stdbuf
+          # acl - setfacl
+
+      - name: Clone SourceForge repo
+        run: |
+          git clone https://git.code.sf.net/u/locofungus/dump --branch back-to-c-v2 dump-code
+#          git clone https://git.code.sf.net/p/dump/code --branch v0.4b53-wip dump-code
+
+      - name: Fetch test binaries
+        uses: actions/download-artifact@v5
+        with:
+          name: dump-dev-bookworm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: test-runner/
+          run-id: 21098743895
+
+      - name: Create test runner
+        run: |
+          chmod 755 test-runner/faketape/dump-info
+          chmod 755 test-runner/faketape/faketape-st
+          chmod 755 test-runner/faketape/faketape
+          chmod 755 test-runner/dump/dump
+          chmod 755 test-runner/restore/restore
+          chmod 755 test-runner/rmt/rmt
+          mkdir test-runner/testing/
+          cp -dpR dump-code/testing/noroot test-runner/testing/
+
+      - name: Run the tests
+        run: |
+          cd test-runner/testing/noroot/
+          sed -i '/make -C/ d' run_all_tests.sh
+          ./run_all_tests.sh --run-only quick-regression || true
+          mkdir "${GITHUB_WORKSPACE}/logs"
+          cp *.log "${GITHUB_WORKSPACE}/logs"
+          cat quick-regression.log
+
+      - name: Publish logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-dev-bookworm-logs
+          path: logs/
